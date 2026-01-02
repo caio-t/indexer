@@ -17,6 +17,17 @@ This is a **Java web crawler** that periodically fetches and indexes web content
 # Compile to bin/ folder with classpath including lib/ and src/
 javac -d bin -cp "lib/*;src" src/bitvix/indexer/**/**/*.java
 
+# Configure database (optional - uses defaults if not provided):
+# Option 1: Create database.properties in the working directory
+echo "db.url=jdbc:mysql://localhost:3306/webcrawler" > database.properties
+echo "db.username=root" >> database.properties
+echo "db.password=" >> database.properties
+
+# Option 2: Set environment variables
+set DB_URL=jdbc:mysql://localhost:3306/webcrawler
+set DB_USERNAME=root
+set DB_PASSWORD=
+
 # Run the main entry point (starts Timer-based scheduler)
 java -cp "bin;lib/*" bitvix.indexer.main.Main
 ```
@@ -34,20 +45,29 @@ docker-compose logs -f mysql
 
 ## Critical Conventions & Patterns
 
-### 1. **Database Configuration**
-- Credentials hardcoded in [src/bitvix/indexer/util/Util.java](src/bitvix/indexer/util/Util.java): `URL`, `USERNAME`, `PASSWORD` constants
-- **If you modify these**, update `docker-compose.yml` environment vars to match
-- Connection pattern: `ContentDao.connect()` opens per-call, `close()` closes (no pooling)
+### 1. **Database Configuration** ✓ IMPROVED
+- **NEW**: Externalizable configuration via [src/bitvix/indexer/util/DatabaseConfig.java](src/bitvix/indexer/util/DatabaseConfig.java)
+- Credentials can now be provided via:
+  - `database.properties` file (in classpath)
+  - Environment variables: `DB_URL`, `DB_USERNAME`, `DB_PASSWORD`
+  - System properties: `db.url`, `db.username`, `db.password`
+  - Hardcoded defaults (for backward compatibility)
+- **Legacy**: [src/bitvix/indexer/util/Util.java](src/bitvix/indexer/util/Util.java) now delegates to `DatabaseConfig`
+- Connection pattern: Try-with-resources (`try-with-resources`) ensures automatic cleanup (no resource leaks)
 
-### 2. **Error Handling Philosophy**
-- DAO methods call `printError(...); System.exit(0)` on serious DB errors
-- **Changing this changes process lifecycle** — consider timing implications for scheduled crawls
-- No try-catch recovery; failures are fatal
+### 2. **Error Handling Philosophy** ✓ IMPROVED
+- **OLD PATTERN (REMOVED)**: `printError(...); System.exit(0)` called fatal errors, killing the entire process mid-crawl
+- **NEW PATTERN**: `logError(context, exception)` logs errors with full stack traces for debugging
+- **KEY CHANGE**: Errors no longer force process termination — allows graceful degradation and retry logic
+- Callers can implement recovery strategies (e.g., skip failed customer, continue with next)
+- See [src/bitvix/indexer/util/DatabaseException.java](src/bitvix/indexer/util/DatabaseException.java) for custom exception handling
 
-### 3. **SQL Injection Risk**
-- Many queries use **string concatenation** (e.g., `"WHERE cus_chp_customer = " + customer.getId()`)
-- When modifying DAO SQL, prefer `PreparedStatement` for user-input values
-- Example in [ContentDao.java](src/bitvix/indexer/dao/ContentDao.java): `rs = stm.executeQuery(sql)` — vulnerable if SQL is user-built
+### 3. **SQL Injection Prevention** ✓ IMPROVED
+- **ALL queries now use `PreparedStatement`** with parameterized bindings
+- **OLD PATTERN (REMOVED)**: String concatenation like `"WHERE cus_chp_customer = " + customer.getId()`
+- **NEW PATTERN**: Prepared statements with `?` placeholders: `pstm.setInt(1, customer.getId())`
+- Examples in refactored [ContentDao.java](src/bitvix/indexer/dao/ContentDao.java): `getDomain()`, `insert()`, `fetchCustomer()`, all now parameterized
+- **Result**: SQL injection attacks impossible; automatic escaping of string values
 
 ### 4. **Naming Conventions (Hungarian-inspired)**
 - Table/column names follow pattern: `tbl/entt + var/int/chp_ + lowercase_name`
@@ -93,9 +113,9 @@ Tables in `migration/001_init.sql`:
 
 ## Known Gaps & Improvement Opportunities
 - **No build tool**: Use `pom.xml` or `gradle.build` to manage `lib/` dependencies instead of manual JAR management
-- **Connection pooling**: Currently opens/closes per DAO call; consider HikariCP or C3P0
-- **Prepared statements**: Convert string SQL concatenations to prepared statements
+- **Connection pooling**: Consider HikariCP or C3P0 for multi-threaded crawling (currently safe with per-call connections)
 - **Threading**: `Crawler` threads may not be explicitly joined; potential resource leaks or incomplete indexing
+- **API layer**: No REST API for external integrations; consider adding Spring Boot endpoints
 
 ## Common Tasks
 

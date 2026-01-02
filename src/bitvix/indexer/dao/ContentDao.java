@@ -13,6 +13,7 @@ import java.util.LinkedList;
 import bitvix.indexer.model.Customer;
 import bitvix.indexer.model.Site;
 import bitvix.indexer.util.Util;
+import bitvix.indexer.util.DatabaseException;
 
 public class ContentDao implements WebCrawlerDao {
 	
@@ -22,319 +23,230 @@ public class ContentDao implements WebCrawlerDao {
 	
 	
 	public LinkedList<Site> getDomain(Customer customer) {
-		// TODO Auto-generated method stub
-		connect();
-		
 		LinkedList<Site> sites = new LinkedList<Site>();
+		String sql = "SELECT * FROM entt_site WHERE sit_chp_site IN (SELECT sit_chp_site FROM tbla_customersite WHERE cus_chp_customer = ?)";
 		
-		String sql = "SELECT * FROM entt_site "
-				+ "WHERE sit_chp_site in (select sit_chp_site FROM "
-				+ "	tbla_customersite WHERE cus_chp_customer = "+customer.getId()+")";
-		ResultSet rs;
-		
-		try {
-			Statement stm = conn.createStatement(); 
-			rs = stm.executeQuery(sql);
-		
-			Site site;
-			while(rs.next())
-			{
-				site = new Site();
+		try (Connection conn = ConnFactory.conexao(Util.URL, Util.USERNAME, Util.PASSWORD, ConnFactory.MYSQL);
+		     PreparedStatement pstm = conn.prepareStatement(sql)) {
+			
+			pstm.setInt(1, customer.getId());
+			ResultSet rs = pstm.executeQuery();
+			
+			while (rs.next()) {
+				Site site = new Site();
 				site.setName(rs.getString("sit_var_name"));
 				site.setUrl(rs.getString("sit_var_url"));
 				site.setDomain(rs.getString("sit_var_domain"));
 				site.setMaxDepthOfCrawling(rs.getInt("sit_int_maxdepthofcrawling"));
 				site.setMaxPagesToFetch(rs.getInt("sit_int_maxpagestofetch"));
 				site.setPolitenessDelay(rs.getInt("sit_int_politenessdelay"));
-				
 				sites.add(site);
-				
 			}
 		} catch (SQLException e) {
-			// TODO Auto-generated catch block
-			e.printStackTrace();
+			logError("Failed to retrieve sites for customer ID: " + customer.getId(), e);
+		} catch (ClassNotFoundException e) {
+			logError("Database driver not found", e);
 		}
-		 
-		return sites;
 		
-		 
+		return sites;
 	}
 	
 	@Override
 	public void insert(int customerId, String keyword, String anchor, String text, String url, String domain, String subDomain, String parentUrl) {
+		String checkSql = "SELECT con_chp_content, con_var_anchor, con_var_text FROM entt_content WHERE cus_chp_customer = ? AND con_var_keyword = ? AND con_var_url = ?";
+		String insertSql = "INSERT INTO entt_content (cus_chp_customer, con_var_keyword, con_var_anchor, con_var_text, con_var_url, con_var_domain, con_var_subdomain, con_var_parenturl, con_var_dateregister) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())";
+		String updateSql = "UPDATE entt_content SET con_var_dateregister = NOW(), con_var_anchor = ?, con_var_text = ? WHERE con_chp_content = ?";
 		
-		connect();
-		String sql = "";
-		ResultSet rs;
-		try {  
+		try (Connection conn = ConnFactory.conexao(Util.URL, Util.USERNAME, Util.PASSWORD, ConnFactory.MYSQL);
+		     PreparedStatement checkStm = conn.prepareStatement(checkSql)) {
 			
-				sql = "SELECT con_chp_content, con_var_anchor, con_var_text FROM entt_content WHERE cus_chp_customer = "+customerId+ " AND con_var_keyword = '"+ keyword +"' AND con_var_url = '"+url+"'";
+			checkStm.setInt(1, customerId);
+			checkStm.setString(2, keyword);
+			checkStm.setString(3, url);
+			ResultSet rs = checkStm.executeQuery();
 			
-				Statement stm = conn.createStatement(); 
-				rs = stm.executeQuery(sql);
-				
-				if (!rs.last())
-				{
-					sql = "INSERT INTO entt_content (cus_chp_customer,con_var_keyword,con_var_anchor,con_var_text,con_var_url,con_var_domain,con_var_subdomain,con_var_parenturl,con_var_dateregister) "
-							+ "	VALUES (?,?,?,?,?,?,?,?,now())"; 
-					
-					this.command = conn.prepareStatement(sql);
-					
-					this.command.setInt(1, customerId); 
-					this.command.setString(2, keyword); 
-					this.command.setString(3, anchor); 
-					this.command.setString(4, text); 
-					this.command.setString(5, url);
-					this.command.setString(6, domain);
-					this.command.setString(7, subDomain);
-					this.command.setString(8, parentUrl);
-					
-					this.command.setQueryTimeout(4000);
-					this.command.execute();
-					System.out.println("Inserida!");  
+			if (!rs.next()) {
+				// Content doesn't exist, insert new record
+				try (PreparedStatement insertStm = conn.prepareStatement(insertSql)) {
+					insertStm.setInt(1, customerId);
+					insertStm.setString(2, keyword);
+					insertStm.setString(3, anchor);
+					insertStm.setString(4, text);
+					insertStm.setString(5, url);
+					insertStm.setString(6, domain);
+					insertStm.setString(7, subDomain);
+					insertStm.setString(8, parentUrl);
+					insertStm.setQueryTimeout(4000);
+					insertStm.execute();
+					System.out.println("‚úì Content inserted for URL: " + url);
 				}
-				else
-				{
-					rs.beforeFirst();
-					
-					rs.next();
-					
-					sql = "UPDATE entt_content SET con_var_dateregister = now(), con_var_anchor = ?, con_var_text = ? WHERE con_chp_content = ?";
-					this.command = conn.prepareStatement(sql);
-					
-					this.command.setString(1, anchor); 
-					this.command.setString(2, text); 
-					this.command.setInt(3, rs.getInt("con_chp_content")); 
-					this.command.setQueryTimeout(2000);
-					this.command.executeUpdate();
-					System.out.println("Atualizado!");  
+			} else {
+				// Content exists, update it
+				int contentId = rs.getInt("con_chp_content");
+				try (PreparedStatement updateStm = conn.prepareStatement(updateSql)) {
+					updateStm.setString(1, anchor);
+					updateStm.setString(2, text);
+					updateStm.setInt(3, contentId);
+					updateStm.setQueryTimeout(2000);
+					updateStm.executeUpdate();
+					System.out.println("‚úì Content updated for URL: " + url);
 				}
-				
-	      } catch (SQLException e) {  
-	         printError("Erro ao inserir conte˙do", e.getMessage() + " ==> SQL DEFEITUOSA: " + sql);  
-	      } finally {  
-	         close();  
-	      }  
-		
+			}
+		} catch (SQLException e) {
+			logError("Failed to insert/update content for URL: " + url, e);
+		} catch (ClassNotFoundException e) {
+			logError("Database driver not found", e);
+		}
 	}
 
 	public void delete() {
 		// TODO Auto-generated method stub
-		
 	}
-	
-	private void close() {  
-	      try {  
-	         conn.close();  
-	         command.close();  
-	         System.out.println("Conex„o Fechada");  
-	      } catch (SQLException e) {  
-	    	  printError("Erro ao fechar conex„o", e.getMessage());  
-	      }  
-	   }  
-	
-	private void connect() {  
-	      try {  
-	         this.conn = ConnFactory.conexao(Util.URL, Util.USERNAME, Util.PASSWORD, ConnFactory.MYSQL);  
-	         System.out.println("Conectado!");  
-	      } catch (ClassNotFoundException e) {  
-	    	  printError("Erro ao carregar o driver", e.getMessage());  
-	      } catch (SQLException e) {  
-	    	  printError("Erro ao conectar", e.getMessage());  
-	      }  
-	   }  
-	
-	private void printError(String msg, String msgErro) {  
-	      System.err.println(msg);  
-	      System.out.println(msgErro);  
-	      System.exit(0);  
-	   }
+
+	/**
+	 * Logs database errors with context information.
+	 * Unlike the old printError method, this does NOT call System.exit(0).
+	 * Errors are logged for monitoring/debugging while allowing the application to continue.
+	 */
+	private void logError(String context, Exception e) {
+		System.err.println("‚ùå DATABASE ERROR: " + context);
+		System.err.println("   Cause: " + e.getMessage());
+		e.printStackTrace(System.err);
+		// Note: Application continues running instead of exiting
+		// Callers can implement retry logic or handle the failure gracefully
+	}
 
 	public LinkedList<Site> getSitesCustomer(Customer customer) {
-		// TODO Auto-generated method stub
-		connect();
-		
 		LinkedList<Site> sites = new LinkedList<Site>();
+		String sql = "SELECT * FROM entt_site WHERE sit_chp_site IN (SELECT sit_chp_site FROM tbla_customersite WHERE cus_chp_customer = ?)";
 		
-		String sql = "SELECT * FROM entt_site "
-				+ "WHERE sit_chp_site in (select sit_chp_site FROM "
-				+ "	tbla_customersite WHERE cus_chp_customer = "+customer.getId()+")";
-		ResultSet rs;
-		
-		try {
-			Statement stm = conn.createStatement(); 
-			rs = stm.executeQuery(sql);
-		
-			Site site;
-			while(rs.next())
-			{
-				site = new Site();
+		try (Connection conn = ConnFactory.conexao(Util.URL, Util.USERNAME, Util.PASSWORD, ConnFactory.MYSQL);
+		     PreparedStatement pstm = conn.prepareStatement(sql)) {
+			
+			pstm.setInt(1, customer.getId());
+			ResultSet rs = pstm.executeQuery();
+			
+			while (rs.next()) {
+				Site site = new Site();
 				site.setName(rs.getString("sit_var_name"));
 				site.setUrl(rs.getString("sit_var_url"));
 				site.setDomain(rs.getString("sit_var_domain"));
 				site.setMaxDepthOfCrawling(rs.getInt("sit_int_maxdepthofcrawling"));
 				site.setMaxPagesToFetch(rs.getInt("sit_int_maxpagestofetch"));
 				site.setPolitenessDelay(rs.getInt("sit_int_politenessdelay"));
-				
 				sites.add(site);
-				
 			}
 		} catch (SQLException e) {
-			// TODO Auto-generated catch block
-			e.printStackTrace();
+			logError("Failed to retrieve sites for customer ID: " + customer.getId(), e);
+		} catch (ClassNotFoundException e) {
+			logError("Database driver not found", e);
 		}
-		 
-		return sites;
 		
-		 
+		return sites;
 	}
 	
 	public ArrayList<String> getBlackList(Customer customer) {
-		// TODO Auto-generated method stub
-		connect();
-		
 		ArrayList<String> sites = new ArrayList<String>();
+		String sql = "SELECT * FROM entt_blacklist WHERE cus_chp_customer = ?";
 		
-		String sql = "SELECT * FROM entt_blacklist "
-				+ "WHERE cus_chp_customer = " + customer.getId();
-		ResultSet rs;
-		
-		
-		try {
-			Statement stm = conn.createStatement(); 
-			rs = stm.executeQuery(sql);
-		
-			while(rs.next())
-			{
+		try (Connection conn = ConnFactory.conexao(Util.URL, Util.USERNAME, Util.PASSWORD, ConnFactory.MYSQL);
+		     PreparedStatement pstm = conn.prepareStatement(sql)) {
+			
+			pstm.setInt(1, customer.getId());
+			ResultSet rs = pstm.executeQuery();
+			
+			while (rs.next()) {
 				sites.add(rs.getString("bll_var_url"));
-				
 			}
 		} catch (SQLException e) {
-			// TODO Auto-generated catch block
-			e.printStackTrace();
+			logError("Failed to retrieve blacklist for customer ID: " + customer.getId(), e);
+		} catch (ClassNotFoundException e) {
+			logError("Database driver not found", e);
 		}
-		 
-		return sites;
 		
-		 
+		return sites;
 	}
 	
 	public ArrayList<String> getSiteSeed(Customer customer) {
-		// TODO Auto-generated method stub
-		connect();
-		
 		ArrayList<String> sites = new ArrayList<String>();
-		
 		String sql = "SELECT * FROM entt_siteseed";
-				
-		ResultSet rs;
 		
-		
-		try {
-			Statement stm = conn.createStatement(); 
-			rs = stm.executeQuery(sql);
-		
-			while(rs.next())
-			{
+		try (Connection conn = ConnFactory.conexao(Util.URL, Util.USERNAME, Util.PASSWORD, ConnFactory.MYSQL);
+		     PreparedStatement pstm = conn.prepareStatement(sql)) {
+			
+			ResultSet rs = pstm.executeQuery();
+			
+			while (rs.next()) {
 				sites.add(rs.getString("sid_var_url"));
-				
 			}
 		} catch (SQLException e) {
-			// TODO Auto-generated catch block
-			e.printStackTrace();
+			logError("Failed to retrieve site seeds", e);
+		} catch (ClassNotFoundException e) {
+			logError("Database driver not found", e);
 		}
-		 
-		return sites;
 		
-		 
+		return sites;
 	}
 	
 	public ArrayList<String> getContentReaded(Customer customer) {
-		// TODO Auto-generated method stub
-		connect();
-		
 		ArrayList<String> sites = new ArrayList<String>();
+		String sql = "SELECT * FROM entt_contentreaded WHERE cus_chp_customer = ?";
 		
-		String sql = "SELECT * FROM entt_contentreaded "
-				+ "WHERE cus_chp_customer = " + customer.getId();
-		ResultSet rs;
-		
-		
-		try {
-			Statement stm = conn.createStatement(); 
-			rs = stm.executeQuery(sql);
-		
-			while(rs.next())
-			{
+		try (Connection conn = ConnFactory.conexao(Util.URL, Util.USERNAME, Util.PASSWORD, ConnFactory.MYSQL);
+		     PreparedStatement pstm = conn.prepareStatement(sql)) {
+			
+			pstm.setInt(1, customer.getId());
+			ResultSet rs = pstm.executeQuery();
+			
+			while (rs.next()) {
 				sites.add(rs.getString("cor_var_url"));
-				
 			}
 		} catch (SQLException e) {
-			// TODO Auto-generated catch block
-			e.printStackTrace();
+			logError("Failed to retrieve content readed for customer ID: " + customer.getId(), e);
+		} catch (ClassNotFoundException e) {
+			logError("Database driver not found", e);
 		}
-		 
-		return sites;
 		
-		 
+		return sites;
 	}
 	
 	
 	
 	@Override
 	public void fetchCustomer() {
-		// TODO Auto-generated method stub
-		connect();
+		String sql = "SELECT * FROM entt_customer WHERE cus_int_situation = ?";
 		
-	
-		String sql = "SELECT * FROM entt_customer "
-				+ "WHERE cus_int_situation = "+Customer.CUSTOMER_ACTIVE;
-		ResultSet rs;
-		
-		try {
-			Statement stm = conn.createStatement(); 
-			rs = stm.executeQuery(sql);
-			Customer customer = null;
+		try (Connection conn = ConnFactory.conexao(Util.URL, Util.USERNAME, Util.PASSWORD, ConnFactory.MYSQL);
+		     PreparedStatement pstm = conn.prepareStatement(sql)) {
+			
+			pstm.setInt(1, Customer.CUSTOMER_ACTIVE);
+			ResultSet rs = pstm.executeQuery();
 			LinkedList<Customer> customerList = new LinkedList<Customer>();
 			
-			while(rs.next())
-			{
-				customer = new Customer();
+			while (rs.next()) {
+				Customer customer = new Customer();
 				customer.setId(rs.getInt("cus_chp_customer"));
 				customer.setName(rs.getString("cus_var_name"));
 				customer.setKeyword(rs.getString("cus_var_keyword"));
-				
-				System.out.println(customer.getName());
-				customerList.add(customer); 
+				System.out.println("‚úì Loaded customer: " + customer.getName());
+				customerList.add(customer);
 			}
 			
-			 Iterator<Customer> iterator = customerList.iterator();
-		     
-			 while(iterator.hasNext())
-			 {
-				 customer = iterator.next();
-				
-				 customer.addSite(this.getSitesCustomer(customer));
-				 
-				 customer.addBlackList(this.getBlackList(customer));
-				 
-				 customer.addSiteSeed(this.getSiteSeed(customer));
-				 
-				 customer.addContentReaded(this.getContentReaded(customer));
-		
-				 
-				 this.customers.add(customer);
-				 
-			 }
-			 
-			
-			 
-			
+			// Load related data for each customer
+			Iterator<Customer> iterator = customerList.iterator();
+			while (iterator.hasNext()) {
+				Customer customer = iterator.next();
+				customer.addSite(this.getSitesCustomer(customer));
+				customer.addBlackList(this.getBlackList(customer));
+				customer.addSiteSeed(this.getSiteSeed(customer));
+				customer.addContentReaded(this.getContentReaded(customer));
+				this.customers.add(customer);
+			}
 		} catch (SQLException e) {
-			// TODO Auto-generated catch block
-			e.printStackTrace();
+			logError("Failed to fetch customers from database", e);
+		} catch (ClassNotFoundException e) {
+			logError("Database driver not found", e);
 		}
-		 
 	}
 	
 	public LinkedList<Customer> getCustomers()
@@ -342,47 +254,39 @@ public class ContentDao implements WebCrawlerDao {
 		return this.customers;
 	}
 	
-	public void setCurrentCustomer(Customer customer)
-	{
-		connect();
-		String sql = "";
-		try {  
+	public void setCurrentCustomer(Customer customer) {
+		String sql = "UPDATE tbla_config SET cof_int_currentcustomer = ?";
+		
+		try (Connection conn = ConnFactory.conexao(Util.URL, Util.USERNAME, Util.PASSWORD, ConnFactory.MYSQL);
+		     PreparedStatement pstm = conn.prepareStatement(sql)) {
 			
-			sql = "UPDATE tbla_config SET cof_int_currentcustomer = ?";
-			this.command = conn.prepareStatement(sql);
-			
-			this.command.setInt(1, customer.getId()); 
-			this.command.setQueryTimeout(2000);
-			this.command.executeUpdate();
-		} catch (SQLException e) {  
-	         printError("Erro ao inserir conte˙do", e.getMessage() + " ==> SQL DEFEITUOSA: " + sql);  
-	    } finally {  
-	         close();  
-	    }  
+			pstm.setInt(1, customer.getId());
+			pstm.setQueryTimeout(2000);
+			pstm.executeUpdate();
+			System.out.println("‚úì Current customer set to: " + customer.getName());
+		} catch (SQLException e) {
+			logError("Failed to update current customer", e);
+		} catch (ClassNotFoundException e) {
+			logError("Database driver not found", e);
+		}
 	}
 
 	public void updateCountResults(Customer customer) {
-		connect();
+		String sql = "UPDATE entt_customer SET cus_int_numberofresults = (SELECT COUNT(con_chp_content) FROM entt_content WHERE cus_chp_customer = ?) WHERE cus_chp_customer = ?";
 		
-		String sql = "";
-		
-		try {  
+		try (Connection conn = ConnFactory.conexao(Util.URL, Util.USERNAME, Util.PASSWORD, ConnFactory.MYSQL);
+		     PreparedStatement pstm = conn.prepareStatement(sql)) {
 			
-			sql = "UPDATE entt_customer SET cus_int_numberofresults = (SELECT COUNT(con_chp_content) FROM entt_content WHERE cus_chp_customer = ?) WHERE cus_chp_customer = ?";
-			this.command = conn.prepareStatement(sql);
-			
-			this.command.setInt(1, customer.getId()); 
-			this.command.setInt(2, customer.getId()); 
-			
-			this.command.setQueryTimeout(4000);
-			this.command.executeUpdate();
-		} catch (SQLException e) {  
-	         printError("Erro ao inserir conte˙do", e.getMessage() + " ==> SQL DEFEITUOSA: " + sql);  
-	    } finally {  
-	         close();  
-	    }  
-		
-		
+			pstm.setInt(1, customer.getId());
+			pstm.setInt(2, customer.getId());
+			pstm.setQueryTimeout(4000);
+			pstm.executeUpdate();
+			System.out.println("‚úì Result count updated for customer: " + customer.getName());
+		} catch (SQLException e) {
+			logError("Failed to update result count for customer ID: " + customer.getId(), e);
+		} catch (ClassNotFoundException e) {
+			logError("Database driver not found", e);
+		}
 	}
 	
 
